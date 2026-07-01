@@ -139,7 +139,7 @@ owner an idempotent no-op success.
 
 `POST /bookings/initiate` performs everything up to **seat held + payment intent created**
 (returns `PENDING`). Payment-success → commit seat → `CONFIRMED` is out of scope; the
-gateway is stubbed. `InventoryService` implements `commitSeat`/`releaseSeat` for
+gateway is stubbed. `InventoryService` implements `confirmSeat`/`releaseSeat` for
 completeness. A background sweeper flips stale `HELD` seats back to `AVAILABLE` (reporting
 only; lazy expiry already covers correctness).
 
