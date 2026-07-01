@@ -33,14 +33,14 @@ public interface SeatRepository extends JpaRepository<Seat, String> {
                  @Param("bid") String bookingId,
                  @Param("exp") OffsetDateTime holdExpiresAt);
 
-    /** Commit a held seat to BOOKED — seat + owner + state guarded. rowcount 1 = committed. */
+    /** Confirm a held seat to BOOKED — seat + owner + state guarded. rowcount 1 = confirmed. */
     @Modifying(clearAutomatically = true)
     @Query(value = """
             UPDATE seat
             SET status = 'BOOKED', hold_expires_at = NULL
             WHERE seat_id = :sid AND booking_id = :bid AND status = 'HELD'
             """, nativeQuery = true)
-    int commitSeat(@Param("sid") String seatId, @Param("bid") String bookingId);
+    int confirmSeat(@Param("sid") String seatId, @Param("bid") String bookingId);
 
     /** Release a held seat back to AVAILABLE — owner + state guarded. rowcount 1 = released. */
     @Modifying(clearAutomatically = true)

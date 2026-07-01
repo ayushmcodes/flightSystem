@@ -74,13 +74,13 @@ class InventoryServiceImplTest {
 
     @Test
     void confirmSeat_rowcount1_returnsTrue() {
-        when(seatRepository.commitSeat("SEAT-1", "BK-1")).thenReturn(1);
+        when(seatRepository.confirmSeat("SEAT-1", "BK-1")).thenReturn(1);
         assertThat(inventoryService.confirmSeat("SEAT-1", "BK-1")).isTrue();
     }
 
     @Test
     void confirmSeat_rowcount0_returnsFalse() {
-        when(seatRepository.commitSeat("SEAT-1", "BK-1")).thenReturn(0);
+        when(seatRepository.confirmSeat("SEAT-1", "BK-1")).thenReturn(0);
         assertThat(inventoryService.confirmSeat("SEAT-1", "BK-1")).isFalse();
     }
 
