@@ -70,18 +70,18 @@ class InventoryServiceImplTest {
         assertThat(result.outcome()).isEqualTo(HoldResult.Outcome.NOT_FOUND);
     }
 
-    // --- commitSeat ---
+    // --- confirmSeat ---
 
     @Test
-    void commitSeat_rowcount1_returnsTrue() {
+    void confirmSeat_rowcount1_returnsTrue() {
         when(seatRepository.commitSeat("SEAT-1", "BK-1")).thenReturn(1);
-        assertThat(inventoryService.commitSeat("SEAT-1", "BK-1")).isTrue();
+        assertThat(inventoryService.confirmSeat("SEAT-1", "BK-1")).isTrue();
     }
 
     @Test
-    void commitSeat_rowcount0_returnsFalse() {
+    void confirmSeat_rowcount0_returnsFalse() {
         when(seatRepository.commitSeat("SEAT-1", "BK-1")).thenReturn(0);
-        assertThat(inventoryService.commitSeat("SEAT-1", "BK-1")).isFalse();
+        assertThat(inventoryService.confirmSeat("SEAT-1", "BK-1")).isFalse();
     }
 
     // --- releaseSeat ---

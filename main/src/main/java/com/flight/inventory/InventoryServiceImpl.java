@@ -37,7 +37,7 @@ public class InventoryServiceImpl implements InventoryService {
 
     @Override
     @Transactional
-    public boolean commitSeat(String seatId, String bookingId) {
+    public boolean confirmSeat(String seatId, String bookingId) {
         return seatRepository.commitSeat(seatId, bookingId) == 1;
     }
 

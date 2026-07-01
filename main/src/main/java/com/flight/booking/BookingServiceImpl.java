@@ -102,8 +102,8 @@ public class BookingServiceImpl implements BookingService {
         }
 
         // Seat commit MUST precede booking confirm (design.md §7 ordering rule).
-        boolean committed = inventoryService.commitSeat(booking.getSeatId(), bookingId);
-        if (!committed) {
+        boolean confirmed = inventoryService.confirmSeat(booking.getSeatId(), bookingId);
+        if (!confirmed) {
             // Hold expired or seat taken — money taken but seat is gone.
             bookingRepository.markFailed(bookingId);
             // TODO: trigger refund — money taken but seat unavailable (re-accommodate or refund)

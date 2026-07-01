@@ -167,7 +167,7 @@ class BookingServiceImplTest {
     void confirm_seatCommitFails_marksBookingFailed() {
         Booking booking = pendingBooking("BK-1", "U1", SEAT_ID, null);
         when(bookingRepository.findById("BK-1")).thenReturn(Optional.of(booking));
-        when(inventoryService.commitSeat(SEAT_ID, "BK-1")).thenReturn(false);
+        when(inventoryService.confirmSeat(SEAT_ID, "BK-1")).thenReturn(false);
 
         bookingService.confirm("BK-1");
 
@@ -180,12 +180,12 @@ class BookingServiceImplTest {
         // Seat commit MUST happen before booking confirm — the InOrder assertion is the proof.
         Booking booking = pendingBooking("BK-1", "U1", SEAT_ID, null);
         when(bookingRepository.findById("BK-1")).thenReturn(Optional.of(booking));
-        when(inventoryService.commitSeat(SEAT_ID, "BK-1")).thenReturn(true);
+        when(inventoryService.confirmSeat(SEAT_ID, "BK-1")).thenReturn(true);
 
         bookingService.confirm("BK-1");
 
         InOrder inOrder = inOrder(inventoryService, bookingRepository);
-        inOrder.verify(inventoryService).commitSeat(SEAT_ID, "BK-1");
+        inOrder.verify(inventoryService).confirmSeat(SEAT_ID, "BK-1");
         inOrder.verify(bookingRepository).confirmBooking("BK-1");
     }
 
