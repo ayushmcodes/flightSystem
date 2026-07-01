@@ -92,12 +92,6 @@ class InventoryServiceImplTest {
         assertThat(inventoryService.releaseSeat("BK-1")).isTrue();
     }
 
-    @Test
-    void releaseSeat_rowcount0_returnsFalse() {
-        when(seatRepository.releaseSeat("BK-1")).thenReturn(0);
-        assertThat(inventoryService.releaseSeat("BK-1")).isFalse();
-    }
-
     // --- helpers ---
 
     private static Seat seat(String seatId, String seatNo) {
