@@ -32,7 +32,7 @@ public interface BookingRepository extends JpaRepository<Booking, String> {
     @Modifying(clearAutomatically = true)
     @Query("UPDATE Booking b SET b.paymentId = :paymentId, b.updatedAt = CURRENT_TIMESTAMP " +
            "WHERE b.bookingId = :bid AND b.status = 'PENDING'")
-    int linkPayment(@Param("bid") String bookingId, @Param("paymentId") String paymentId);
+    int linkPaymentToBooking(@Param("bid") String bookingId, @Param("paymentId") String paymentId);
 
     /** PENDING → CONFIRMED. State-guarded; idempotent if already CONFIRMED. rowcount 1 = transitioned. */
     @Transactional

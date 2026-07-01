@@ -65,7 +65,7 @@ class BookingServiceImplTest {
         when(bookingRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
         when(inventoryService.holdSeat(eq(FLIGHT_ID), eq(SEAT_NO), any(), any()))
                 .thenReturn(HoldResult.held(SEAT_ID, SEAT_NO));
-        when(paymentService.createIntent(any(), eq(FARE))).thenReturn(new PaymentIntent("PAY-1", "CREATED"));
+        when(paymentService.createPayment(any(), eq(FARE))).thenReturn(new PaymentIntent("PAY-1", "CREATED"));
 
         BookingResponse response = bookingService.initiate(IDEM_KEY, request("U1"));
 
@@ -74,7 +74,7 @@ class BookingServiceImplTest {
         assertThat(response.paymentId()).isEqualTo("PAY-1");
         assertThat(response.amount()).isEqualByComparingTo(FARE);
         verify(bookingRepository).linkSeat(any(), eq(SEAT_ID));
-        verify(bookingRepository).linkPayment(any(), eq("PAY-1"));
+        verify(bookingRepository).linkPaymentToBooking(any(), eq("PAY-1"));
     }
 
     @Test

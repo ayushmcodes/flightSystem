@@ -38,38 +38,38 @@ class PaymentServiceImplTest {
     }
 
     // =========================================================================
-    // createIntent
+    // createPayment
     // =========================================================================
 
     @Test
-    void createIntent_firstCall_insertsAndReturnsIntent() {
+    void createPayment_firstCall_insertsAndReturnsIntent() {
         Payment saved = payment("PAY-1", "BK-1", "CREATED");
         when(paymentRepository.saveAndFlush(any())).thenReturn(saved);
 
-        PaymentIntent intent = paymentService.createIntent("BK-1", new BigDecimal("5000.00"));
+        PaymentIntent intent = paymentService.createPayment("BK-1", new BigDecimal("5000.00"));
 
         assertThat(intent.paymentId()).isEqualTo("PAY-1");
         assertThat(intent.status()).isEqualTo("CREATED");
     }
 
     @Test
-    void createIntent_duplicateBookingId_returnsExistingIntent() {
+    void createPayment_duplicateBookingId_returnsExistingIntent() {
         when(paymentRepository.saveAndFlush(any())).thenThrow(DataIntegrityViolationException.class);
         when(paymentRepository.findByBookingId("BK-1")).thenReturn(Optional.of(payment("PAY-existing", "BK-1", "CREATED")));
 
-        PaymentIntent intent = paymentService.createIntent("BK-1", new BigDecimal("5000.00"));
+        PaymentIntent intent = paymentService.createPayment("BK-1", new BigDecimal("5000.00"));
 
         assertThat(intent.paymentId()).isEqualTo("PAY-existing");
         verify(paymentRepository, times(1)).saveAndFlush(any());
     }
 
     @Test
-    void createIntent_duplicateBookingId_lookupAlsoMissing_rethrows() {
+    void createPayment_duplicateBookingId_lookupAlsoMissing_rethrows() {
         DataIntegrityViolationException original = new DataIntegrityViolationException("duplicate key");
         when(paymentRepository.saveAndFlush(any())).thenThrow(original);
         when(paymentRepository.findByBookingId("BK-1")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> paymentService.createIntent("BK-1", new BigDecimal("5000.00")))
+        assertThatThrownBy(() -> paymentService.createPayment("BK-1", new BigDecimal("5000.00")))
                 .isSameAs(original);
     }
 

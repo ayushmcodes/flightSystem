@@ -61,9 +61,9 @@ public class BookingServiceImpl implements BookingService {
 
         // Step 1: INSERT booking(PENDING). UNIQUE(idempotency_key) lets exactly one win;
         // a collision means this is a replay, so return the original response unchanged.
-        Booking booking = tryCreatePending(idempotencyKey, request, amount);
+        Booking booking = createBooking(idempotencyKey, request, amount);
         if (booking == null) {
-            return replay(idempotencyKey, request);
+            return resolveIdempotentRetry(idempotencyKey, request);
         }
 
         // Step 2: hold the seat via a single atomic conditional UPDATE.
@@ -86,8 +86,8 @@ public class BookingServiceImpl implements BookingService {
         }
 
         // Step 3: create the payment intent (idempotent on bookingId), then link it.
-        PaymentIntent intent = paymentService.createIntent(booking.getBookingId(), amount);
-        bookingRepository.linkPayment(booking.getBookingId(), intent.paymentId());//comment: what if payment is complete in case of retry attempt
+        PaymentIntent intent = paymentService.createPayment(booking.getBookingId(), amount);
+        bookingRepository.linkPaymentToBooking(booking.getBookingId(), intent.paymentId());//comment: what if payment is complete in case of retry attempt
 
         // Step 4: return PENDING. Payment success -> commit -> CONFIRMED is out of scope.
         return new BookingResponse(booking.getBookingId(), "PENDING", hold.seatNo(), intent.paymentId(), amount);
@@ -114,7 +114,7 @@ public class BookingServiceImpl implements BookingService {
     }
 
     /** Insert a PENDING booking; returns null if the idempotency key already exists (a replay). */
-    private Booking tryCreatePending(String idempotencyKey, InitiateBookingRequest request, BigDecimal amount) {
+    private Booking createBooking(String idempotencyKey, InitiateBookingRequest request, BigDecimal amount) {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         Booking booking = new Booking();
         booking.setBookingId("BK-" + UUID.randomUUID());
@@ -140,7 +140,7 @@ public class BookingServiceImpl implements BookingService {
      * the fixed 4-column booking schema has no request-hash column, so binding is by these
      * fields only — a documented tradeoff.
      */
-    private BookingResponse replay(String idempotencyKey, InitiateBookingRequest request) {
+    private BookingResponse resolveIdempotentRetry(String idempotencyKey, InitiateBookingRequest request) {
         Booking existing = bookingRepository.findByIdempotencyKey(idempotencyKey)
                 .orElseThrow(() -> new IllegalStateException(
                         "Idempotency key vanished after collision: " + idempotencyKey));

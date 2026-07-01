@@ -30,7 +30,7 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
-    public PaymentIntent createIntent(String bookingId, BigDecimal amount) {
+    public PaymentIntent createPayment(String bookingId, BigDecimal amount) {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         Payment payment = new Payment();
         payment.setPaymentId("PAY-" + UUID.randomUUID());

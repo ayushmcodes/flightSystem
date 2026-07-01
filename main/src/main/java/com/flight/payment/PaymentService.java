@@ -14,7 +14,7 @@ public interface PaymentService {
      * UNIQUE(booking_id) constraint guarantees at most one intent per booking, so a retry
      * returns the existing intent rather than creating a second one (no double charge).
      */
-    PaymentIntent createIntent(String bookingId, BigDecimal amount);
+    PaymentIntent createPayment(String bookingId, BigDecimal amount);
 
     /**
      * Confirm a payment via a gateway webhook signal. Idempotent on {@code eventId} via the
