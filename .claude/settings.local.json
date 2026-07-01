@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -rf src/main/java/com/example src/test/java/com/example target)",
+      "Bash(mkdir -p src/main/java/com/flight/search/dto src/main/java/com/flight/inventory src/main/java/com/flight/payment src/main/java/com/flight/booking/dto db/init)",
+      "Bash(docker compose *)",
+      "Bash(grep -iA 25 \"exception\\\\|error\\\\|caused by\")",
+      "Bash(curl -s -w '\\\\n[HTTP %{http_code}]\\\\n' -X POST http://localhost:8080/bookings/initiate -H 'Idempotency-Key: key-001' -H 'Content-Type: application/json' -d '{\"userId\":\"U1\",\"scheduledFlightId\":\"SF1\",\"seatNo\":\"3A\",\"passengers\":[{\"name\":\"Ayush\"}]}')",
+      "Bash(curl -s -w '\\\\n[HTTP %{http_code}]\\\\n' -X POST http://localhost:8080/bookings/initiate -H 'Idempotency-Key: key-001' -H 'Content-Type: application/json' -d '{\"userId\":\"U1\",\"scheduledFlightId\":\"SF1\",\"seatNo\":\"4B\",\"passengers\":[{\"name\":\"Ayush\"}]}')",
+      "Bash(curl -s -w '\\\\n[HTTP %{http_code}]\\\\n' -X POST http://localhost:8080/bookings/initiate -H 'Idempotency-Key: key-002' -H 'Content-Type: application/json' -d '{\"userId\":\"U2\",\"scheduledFlightId\":\"SF1\",\"seatNo\":\"3A\",\"passengers\":[{\"name\":\"Bob\"}]}')",
+      "Bash(curl -s -w '\\\\n[HTTP %{http_code}]\\\\n' -X POST http://localhost:8080/bookings/initiate -H 'Idempotency-Key: key-003' -H 'Content-Type: application/json' -d '{\"userId\":\"U3\",\"scheduledFlightId\":\"SF1\",\"seatNo\":\"99Z\",\"passengers\":[{\"name\":\"Cid\"}]}')",
+      "Bash(curl -s -w '\\\\n[HTTP %{http_code}]\\\\n' -X POST http://localhost:8080/bookings/initiate -H 'Idempotency-Key: key-004' -H 'Content-Type: application/json' -d '{\"userId\":\"U4\",\"scheduledFlightId\":\"NOPE\",\"seatNo\":\"3A\",\"passengers\":[{\"name\":\"Dan\"}]}')"
+    ]
+  }
+}

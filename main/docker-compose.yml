@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: flightdb
+      POSTGRES_USER: flight
+      POSTGRES_PASSWORD: flight
+    # Schema (V1) + seed (V2) run on first boot, in filename order.
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flight -d flightdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Host port 5433 -> container 5432 (avoids clashing with a local Postgres); the app
+    # reaches Postgres over the compose network, not this mapping.
+    ports:
+      - "5433:5432"
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/flightdb
+      SPRING_DATASOURCE_USERNAME: flight
+      SPRING_DATASOURCE_PASSWORD: flight
+    ports:
+      - "8080:8080"
