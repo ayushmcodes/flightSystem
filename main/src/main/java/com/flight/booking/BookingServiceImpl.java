@@ -11,6 +11,7 @@ import com.flight.payment.dto.PaymentIntent;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -90,6 +91,26 @@ public class BookingServiceImpl implements BookingService {
 
         // Step 4: return PENDING. Payment success -> commit -> CONFIRMED is out of scope.
         return new BookingResponse(booking.getBookingId(), "PENDING", hold.seatNo(), intent.paymentId(), amount);
+    }
+
+    @Override
+    @Transactional
+    public void confirm(String bookingId) {
+        Booking booking = bookingRepository.findById(bookingId).orElse(null);
+        if (booking == null || !"PENDING".equals(booking.getStatus())) {
+            return; // already confirmed / failed / unknown — idempotent no-op
+        }
+
+        // Seat commit MUST precede booking confirm (design.md §7 ordering rule).
+        boolean committed = inventoryService.commitSeat(booking.getSeatId(), bookingId);
+        if (!committed) {
+            // Hold expired or seat taken — money taken but seat is gone.
+            bookingRepository.markFailed(bookingId);
+            // TODO: trigger refund — money taken but seat unavailable (re-accommodate or refund)
+            return;
+        }
+
+        bookingRepository.confirmBooking(bookingId);
     }
 
     /** Insert a PENDING booking; returns null if the idempotency key already exists (a replay). */

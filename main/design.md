@@ -8,8 +8,9 @@ driven by a payment-success signal from a gateway.
 
 The domain decomposes into four bounded contexts:
 
-- **Search** — read side; serves flight queries.
-- **Inventory** — source of truth for seat state; owns the *no-oversell* guarantee.
+- **Search** — read side; owns no tables. Serves flight queries by calling Inventory.
+- **Inventory** — owns flight schedules **and** seat state; source of truth for
+  availability and the *no-oversell* guarantee.
 - **Booking** — orchestrates the booking lifecycle (the saga).
 - **Payment** — payment intent, gateway integration, payment state.
 
@@ -27,20 +28,20 @@ becomes a broker subscription.
 flowchart LR
   C[Client] --> B[Booking]
   C --> S[Search]
-  B -->|hold / commit / release| I[Inventory]
+  S -->|searchFlightsWithAvailability| I[Inventory]
+  B -->|hold / commit / release| I
   B -->|create intent| P[Payment]
-  P -.payment-success.-> B
-  S --- DBS[(seats / flights - read)]
-  I --- DBI[(seat)]
+  P -.PaymentConfirmedEvent.-> B
+  I --- DBI[(flight, seat)]
   B --- DBB[(booking)]
-  P --- DBP[(payment)]
+  P --- DBP[(payment, processed_webhook)]
 ```
 
 ---
 
 ## 2. Entity Model
 
-### Flight (Search / Inventory)
+### Flight (Inventory) — read by Search
 | Field | Notes |
 |---|---|
 | `scheduled_flight_id` (PK) | one **dated** flight (see Assumptions) |
@@ -85,6 +86,11 @@ an existing seat row.
 | `amount` | |
 | `status` | `CREATED` / `SUCCESS` / `FAILED` |
 | `idempotency_key` | deterministic from `booking_id` |
+
+### ProcessedWebhook (Payment)
+| Field | Notes |
+|---|---|
+| `event_id` (PK) | gateway-supplied event id; the dedup token for at-least-once webhook redelivery |
 
 ### Relationships
 ```
@@ -216,8 +222,26 @@ sequenceDiagram
 | commit | `→ CONFIRMED` | `HELD → BOOKED` | — |
 
 > `POST /bookings/initiate` performs everything up to **seats held + payment intent
-> created**, returning `PENDING`. Confirmation (payment-success → commit) is the
-> asynchronous second half and is modelled as a separate handler (see Assumptions).
+> created**, returning `PENDING`.
+
+### How payment confirmation completes the booking
+Confirmation is the second half of the saga, triggered by a **mock gateway webhook**:
+
+```
+POST /payments/{paymentId}/confirm   (Event-Id header)
+```
+
+1. **Payment** owns this endpoint (it mutates a payment row). It treats the call as
+   untrusted webhook input: dedup on `Event-Id` via `processed_webhook` (gateways
+   redeliver, at-least-once), a stubbed signature check, then a guarded
+   `CREATED → SUCCESS` update.
+2. Payment **publishes** `PaymentConfirmedEvent(bookingId)` and touches nothing else —
+   not the seat, not the booking. In the monolith this is a Spring `ApplicationEvent`;
+   across services it becomes a Kafka topic (see §11).
+3. **Booking** listens for the event and orchestrates the finish: `commit(seat,
+   owner=bookingId)` (`HELD → BOOKED`), then `booking → CONFIRMED`, in that order.
+   If the commit fails (hold expired, seat re-taken), booking is *not* confirmed and
+   the refund path applies (§7).
 
 ---
 
@@ -245,8 +269,10 @@ state*, which makes the system safe under the three retry scenarios:
 
 - **Duplicate client `initiate`:** client supplies `Idempotency-Key`; the
   `UNIQUE(idempotency_key)` constraint on `booking` lets exactly one INSERT win.
-  Replays return the existing booking and the same response (not an error). The key
-  is bound to the request payload; same key + different body → 422.
+  A replay returns the *first call's outcome*, not an error: the existing booking's
+  response if it completed, `409`/"in progress" if the original is still mid-flight,
+  or the stored failure if it failed (a fresh attempt needs a new key). The key is
+  bound to the request payload; same key + different body → 422.
 - **Booking → Inventory retried (timeout):** the hold/commit guard
   `... OR booking_id=:booking_id` makes re-applying a no-op success for the owner and a
   correct failure for anyone else. No dedup table needed — natural idempotency via
@@ -313,7 +339,8 @@ Idempotency-Key: <client-generated, stable across retries>
 {
   "userId": "U1",
   "flightId": "F21",
-  "seatNo": "12A"
+  "seatNo": "12A",
+  "passengers": [ { "name": "Ayush" } ]
 }
 ```
 Success (`200`):
@@ -329,6 +356,15 @@ Success (`200`):
 Failure modes: `409` seat unavailable, `422` idempotency-key reused with a different
 payload, `404` flight/seat not found.
 
+### API 3 — Confirm Payment (mock gateway webhook)
+```
+POST /payments/{paymentId}/confirm
+Event-Id: <gateway event id, stable across redeliveries>
+```
+Drives `payment → SUCCESS`, `seat → BOOKED`, `booking → CONFIRMED` (§4). Idempotent to
+redelivery via `processed_webhook(event_id)`; returns `200` even on a duplicate event
+(which is a no-op).
+
 ---
 
 ## 9. Assumptions & Deliberate Simplifications
@@ -338,12 +374,13 @@ payload, `404` flight/seat not found.
    here as it does not affect the reservation logic being demonstrated.
 2. **Single-seat booking on the hot path** for clarity. Multi-seat extends naturally:
    all seats are held in one transaction; partial holds are released as compensation.
-3. **Payment confirmation is modelled but the gateway is stubbed.** `initiate`
-   returns `PENDING`; a separate handler simulates the verified, deduped
-   payment-success signal that drives commit + confirm.
+3. **Payment confirmation is implemented as a mock webhook** (`POST
+   /payments/{id}/confirm`) standing in for the gateway; signature verification is
+   stubbed. It drives payment `SUCCESS` → seat commit → booking `CONFIRMED`.
 4. **No auth/users service.** `userId` is taken as given.
-5. **Search is served from the same store** rather than a dedicated read model
-   (e.g. Elasticsearch); the separation is described, not built.
+5. **Search owns no store**; it calls Inventory for flights + availability (the
+   `flight`/`seat` JOIN lives in Inventory). A dedicated read model built from events
+   (e.g. Elasticsearch) is described as the scaling step, not built.
 6. **Outbox and reconciliation are described** as the crash-safety mechanisms; the
    submission implements the synchronous happy path plus the conditional-update
    guarantees, which are the parts the brief asks to be demonstrated.
@@ -358,3 +395,28 @@ payload, `404` flight/seat not found.
   non-owner fails; idempotent re-initiate returns the same booking.
 - **Integration — end-to-end:** search → initiate on a returned result → assert final
   booking state and seat state, per the brief.
+
+---
+
+## 11. Persistence & Communication
+
+**Persistence — JPA for CRUD, native conditional updates for the seat.** Standard
+access (flight reads, booking and payment inserts/reads) uses Spring Data JPA. The
+seat hold/commit/release are **not** JPA read-modify-write (load entity → set field →
+save), because that is a check-then-set race that oversells under concurrency. They are
+single atomic conditional `UPDATE`s (`@Modifying @Query(nativeQuery=true)`) returning a
+rowcount — the rowcount is the no-oversell signal. No `@Version` or pessimistic locking:
+the conditional update already guarantees correctness lock-free. Idempotency rides on
+`UNIQUE` constraints (`booking.idempotency_key`, `payment.booking_id`,
+`processed_webhook.event_id`) — attempt the insert and catch the violation; never
+pre-`SELECT`, which would reintroduce the race.
+
+**Communication — in-process now, the seam for Kafka later.** Packages call each other
+through Java service interfaces (booking → inventory, booking → payment; search →
+inventory). The one publish/subscribe hop — payment announcing success to booking — is
+a Spring `ApplicationEvent` (`PaymentConfirmedEvent`), run **synchronously** so the
+payment update, seat commit, and booking confirm share one transaction. This is
+deliberately the exact seam that becomes a **Kafka topic** when payment and booking are
+extracted into separate services: publisher → topic, `@EventListener` → `@KafkaListener`,
+with an **outbox** (§7) making the publish atomic with the state change across the
+network boundary.

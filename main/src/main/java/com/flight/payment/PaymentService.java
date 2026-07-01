@@ -5,8 +5,7 @@ import com.flight.payment.dto.PaymentIntent;
 import java.math.BigDecimal;
 
 /**
- * Public in-process interface of the {@code payment} package. The gateway is stubbed:
- * this creates the payment intent only. Confirmation (CREATED -> SUCCESS) is out of scope.
+ * Public in-process interface of the {@code payment} package.
  */
 public interface PaymentService {
 
@@ -16,4 +15,12 @@ public interface PaymentService {
      * returns the existing intent rather than creating a second one (no double charge).
      */
     PaymentIntent createIntent(String bookingId, BigDecimal amount);
+
+    /**
+     * Confirm a payment via a gateway webhook signal. Idempotent on {@code eventId} via the
+     * {@code processed_webhook} dedupe table. On success, publishes a
+     * {@link com.flight.payment.event.PaymentConfirmedEvent} in-process so the booking
+     * package can drive seat commit and booking confirmation atomically.
+     */
+    void confirm(String paymentId, String eventId);
 }
