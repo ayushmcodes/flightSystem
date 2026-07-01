@@ -199,7 +199,7 @@ sequenceDiagram
     B-->>U: 409
   else seat held
     I-->>B: HELD
-    B->>P: createIntent(bookingId, amount)
+    B->>P: createPayment(bookingId, amount)
     P->>P: INSERT payment(CREATED)
     P-->>B: paymentId
     B->>B: booking.payment_id = paymentId (stays PENDING)
