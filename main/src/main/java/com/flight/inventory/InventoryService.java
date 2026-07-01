@@ -18,8 +18,8 @@ public interface InventoryService {
      */
     HoldResult holdSeat(String scheduledFlightId, String seatNo, String bookingId, Duration ttl);
 
-    /** Commit the seat held by this booking to BOOKED. Returns true iff a HELD seat was committed. */
-    boolean commitSeat(String bookingId);
+    /** Commit the given seat held by this booking to BOOKED. Returns true iff a HELD seat was committed. */
+    boolean commitSeat(String seatId, String bookingId);
 
     /** Release the seat held by this booking back to AVAILABLE. Returns true iff a HELD seat was released. */
     boolean releaseSeat(String bookingId);

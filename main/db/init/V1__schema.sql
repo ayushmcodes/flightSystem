@@ -58,3 +58,10 @@ CREATE TABLE payment (
     created_at          TIMESTAMPTZ  NOT NULL,
     updated_at          TIMESTAMPTZ  NOT NULL
 );
+
+-- Webhook-redelivery dedupe guard (payment package): a confirm webhook whose event_id is
+-- already present is a no-op. The PK is the dedupe mechanism (attempt INSERT, catch the
+-- violation) — see ProcessedWebhookRepository.
+CREATE TABLE processed_webhook (
+    event_id            VARCHAR(128) PRIMARY KEY
+);
