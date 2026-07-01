@@ -1,7 +1,7 @@
-package com.flight.search;
+package com.flight.inventory;
 
-import com.flight.search.dto.FlightSearchResponse;
-import com.flight.search.dto.FlightSearchResult;
+import com.flight.inventory.dto.FlightAvailability;
+import com.flight.inventory.entity.Flight;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -12,32 +12,25 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
-/**
- * Implements both public read interfaces of the search package. Both back onto
- * the
- * flight table (and, for the availability count, the single allowed flight⨝seat
- * JOIN).
- */
 @Service
 @Transactional(readOnly = true)
-public class FlightServiceImpl implements FlightSearchService, FlightQueryService {
+public class CatalogQueryServiceImpl implements CatalogQueryService {
 
     private final FlightRepository flightRepository;
 
-    public FlightServiceImpl(FlightRepository flightRepository) {
+    public CatalogQueryServiceImpl(FlightRepository flightRepository) {
         this.flightRepository = flightRepository;
     }
 
     @Override
-    public FlightSearchResponse search(String source, String destination, LocalDate date) {
+    public List<FlightAvailability> searchFlights(String source, String destination, LocalDate date) {
         // departure_time within the UTC day [date 00:00Z, date+1 00:00Z).
         OffsetDateTime from = date.atStartOfDay().atOffset(ZoneOffset.UTC);
         OffsetDateTime to = from.plusDays(1);
 
-        List<FlightSearchResult> flights = flightRepository
-                .searchWithAvailability(source, destination, from, to)
+        return flightRepository.searchWithAvailability(source, destination, from, to)
                 .stream()
-                .map(v -> new FlightSearchResult(
+                .map(v -> new FlightAvailability(
                         v.getScheduledFlightId(),
                         v.getFlightId(),
                         v.getSource(),
@@ -47,8 +40,6 @@ public class FlightServiceImpl implements FlightSearchService, FlightQueryServic
                         v.getAvailableSeats(),
                         v.getBaseFare()))
                 .toList();
-
-        return new FlightSearchResponse(flights);
     }
 
     @Override

@@ -1,5 +1,7 @@
 package com.flight.inventory;
 
+import com.flight.inventory.dto.HoldResult;
+import com.flight.inventory.entity.Seat;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 

@@ -2,10 +2,12 @@ package com.flight.booking;
 
 import com.flight.booking.dto.BookingResponse;
 import com.flight.booking.dto.InitiateBookingRequest;
-import com.flight.inventory.HoldResult;
+import com.flight.booking.entity.Booking;
+import com.flight.inventory.CatalogQueryService;
+import com.flight.inventory.dto.HoldResult;
 import com.flight.inventory.InventoryService;
 import com.flight.payment.PaymentService;
-import com.flight.search.FlightQueryService;
+import com.flight.payment.dto.PaymentIntent;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -19,7 +21,7 @@ import java.util.UUID;
 /**
  * The booking orchestrator (the saga). It brackets the whole flow — first and last
  * writer — and drives the other packages purely through their in-process interfaces
- * ({@link FlightQueryService}, {@link InventoryService}, {@link PaymentService}); it never
+ * ({@link CatalogQueryService}, {@link InventoryService}, {@link PaymentService}); it never
  * touches their tables.
  * <p>
  * Deliberately NOT wrapped in a single {@code @Transactional}: each step is its own
@@ -30,18 +32,18 @@ import java.util.UUID;
 @Service
 public class BookingServiceImpl implements BookingService {
 
-    private final FlightQueryService flightQueryService;
+    private final CatalogQueryService catalogQueryService;
     private final InventoryService inventoryService;
     private final PaymentService paymentService;
     private final BookingRepository bookingRepository;
     private final Duration holdTtl;
 
-    public BookingServiceImpl(FlightQueryService flightQueryService,
+    public BookingServiceImpl(CatalogQueryService catalogQueryService,
                               InventoryService inventoryService,
                               PaymentService paymentService,
                               BookingRepository bookingRepository,
                               @Value("${flight.hold.ttl:PT10M}") Duration holdTtl) {
-        this.flightQueryService = flightQueryService;
+        this.catalogQueryService = catalogQueryService;
         this.inventoryService = inventoryService;
         this.paymentService = paymentService;
         this.bookingRepository = bookingRepository;
@@ -52,7 +54,7 @@ public class BookingServiceImpl implements BookingService {
     public BookingResponse initiate(String idempotencyKey, InitiateBookingRequest request) {
         // Amount comes from the flight's base fare, resolved via the search package's
         // interface (booking must not read the flight table). Missing flight -> 404.
-        BigDecimal amount = flightQueryService.findFare(request.scheduledFlightId())
+        BigDecimal amount = catalogQueryService.findFare(request.scheduledFlightId())
                 .orElseThrow(() -> new BookingExceptions.NotFoundException(
                         "Flight not found: " + request.scheduledFlightId()));
 
@@ -77,12 +79,14 @@ public class BookingServiceImpl implements BookingService {
                 throw new BookingExceptions.SeatUnavailableException(
                         "Seat unavailable: " + request.seatNo());
             }
-            default -> bookingRepository.linkSeat(booking.getBookingId(), hold.seatId());
+            case HELD -> {
+                bookingRepository.linkSeat(booking.getBookingId(), hold.seatId());// comment:why can't we use JPA here
+            }
         }
 
         // Step 3: create the payment intent (idempotent on bookingId), then link it.
-        PaymentService.PaymentIntent intent = paymentService.createIntent(booking.getBookingId(), amount);
-        bookingRepository.linkPayment(booking.getBookingId(), intent.paymentId());
+        PaymentIntent intent = paymentService.createIntent(booking.getBookingId(), amount);
+        bookingRepository.linkPayment(booking.getBookingId(), intent.paymentId());//comment: what if payment is complete in case of retry attempt
 
         // Step 4: return PENDING. Payment success -> commit -> CONFIRMED is out of scope.
         return new BookingResponse(booking.getBookingId(), "PENDING", hold.seatNo(), intent.paymentId(), amount);
@@ -112,8 +116,8 @@ public class BookingServiceImpl implements BookingService {
      * with a different body -> 422; otherwise return the original booking's response.
      * <p>
      * Binding compares the persisted identifying fields (userId, scheduledFlightId, seatNo);
-     * the fixed 4-column booking schema has no request-hash column, so the passenger list
-     * is not part of the comparison — a documented tradeoff.
+     * the fixed 4-column booking schema has no request-hash column, so binding is by these
+     * fields only — a documented tradeoff.
      */
     private BookingResponse replay(String idempotencyKey, InitiateBookingRequest request) {
         Booking existing = bookingRepository.findByIdempotencyKey(idempotencyKey)

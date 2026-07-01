@@ -1,5 +1,6 @@
-package com.flight.search;
+package com.flight.inventory;
 
+import com.flight.inventory.entity.Flight;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -11,8 +12,8 @@ import java.util.List;
 public interface FlightRepository extends JpaRepository<Flight, String> {
 
     /**
-     * The one place the {@code search} package is allowed to JOIN flight and seat
-     * directly (single DB, keeps the availability query clean).
+     * Availability search. Both {@code flight} and {@code seat} are owned by this package,
+     * so the JOIN is internal — no cross-module table access.
      * <p>
      * available_seats counts seats that are AVAILABLE plus HELD seats whose hold has
      * lapsed (hold_expires_at &lt; now()) — the lazy-expiry snapshot. It is a snapshot,

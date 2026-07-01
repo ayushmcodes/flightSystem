@@ -1,4 +1,4 @@
-package com.flight.payment;
+package com.flight.payment.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;

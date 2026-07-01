@@ -1,5 +1,7 @@
 package com.flight.inventory;
 
+import com.flight.inventory.dto.HoldResult;
+
 import java.time.Duration;
 import java.util.Optional;
 

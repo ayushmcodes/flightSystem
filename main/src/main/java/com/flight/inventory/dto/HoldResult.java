@@ -1,4 +1,4 @@
-package com.flight.inventory;
+package com.flight.inventory.dto;
 
 /**
  * Outcome of a hold attempt.
@@ -16,15 +16,15 @@ public record HoldResult(Outcome outcome, String seatId, String seatNo) {
         return outcome == Outcome.HELD;
     }
 
-    static HoldResult held(String seatId, String seatNo) {
+    public static HoldResult held(String seatId, String seatNo) {
         return new HoldResult(Outcome.HELD, seatId, seatNo);
     }
 
-    static HoldResult conflict() {
+    public static HoldResult conflict() {
         return new HoldResult(Outcome.CONFLICT, null, null);
     }
 
-    static HoldResult notFound() {
+    public static HoldResult notFound() {
         return new HoldResult(Outcome.NOT_FOUND, null, null);
     }
 }

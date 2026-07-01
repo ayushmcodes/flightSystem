@@ -1,5 +1,7 @@
 package com.flight.payment;
 
+import com.flight.payment.dto.PaymentIntent;
+
 import java.math.BigDecimal;
 
 /**
@@ -14,8 +16,4 @@ public interface PaymentService {
      * returns the existing intent rather than creating a second one (no double charge).
      */
     PaymentIntent createIntent(String bookingId, BigDecimal amount);
-
-    /** Minimal view of a payment intent returned to the orchestrator. */
-    record PaymentIntent(String paymentId, String status) {
-    }
 }

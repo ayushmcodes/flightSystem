@@ -1,4 +1,4 @@
-package com.flight.search;
+package com.flight.inventory.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -11,7 +11,10 @@ import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 
 /**
- * Flight — a single dated flight. Owned by the {@code search} package.
+ * Flight — a single dated flight. Owned by the {@code inventory} package alongside
+ * {@link Seat}: a flight and its seats are one aggregate cluster (seats FK to a flight and
+ * are provisioned with it, and the availability query joins them).
+ * <p>
  * Reference data: rows are provisioned once (see V2 seed) and never mutated by the booking flow.
  */
 @Entity

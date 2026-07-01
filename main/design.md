@@ -313,8 +313,7 @@ Idempotency-Key: <client-generated, stable across retries>
 {
   "userId": "U1",
   "flightId": "F21",
-  "seatNo": "12A",
-  "passengers": [ { "name": "Ayush" } ]
+  "seatNo": "12A"
 }
 ```
 Success (`200`):

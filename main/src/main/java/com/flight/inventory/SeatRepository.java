@@ -1,5 +1,6 @@
 package com.flight.inventory;
 
+import com.flight.inventory.entity.Seat;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -25,8 +26,7 @@ public interface SeatRepository extends JpaRepository<Seat, String> {
             SET status = 'HELD', booking_id = :bid, hold_expires_at = :exp
             WHERE scheduled_flight_id = :flightId AND seat_no = :seatNo
               AND ( status = 'AVAILABLE'
-                    OR (status = 'HELD' AND hold_expires_at < now())
-                    OR booking_id = :bid )
+                    OR (status = 'HELD' AND hold_expires_at < now()))
             """, nativeQuery = true)
     int holdSeat(@Param("flightId") String flightId,
                  @Param("seatNo") String seatNo,

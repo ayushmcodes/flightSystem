@@ -4,14 +4,19 @@ A flight search + booking service built as a **modular monolith**: one Spring Bo
 one Postgres database, four internal packages that talk only through Java service
 interfaces (in-process, never HTTP, never by reaching into another package's tables).
 
-- `com.flight.search` — owns `flight`; serves flight search (read side).
-- `com.flight.inventory` — owns `seat`; the source of truth for the **no-oversell** guarantee.
+- `com.flight.inventory` — owns `flight` + `seat` (one aggregate cluster: a flight and its
+  seats). Source of truth for the sellable catalog and the **no-oversell** guarantee.
+- `com.flight.search` — owns no tables; a read/API module that serves flight search by
+  calling inventory's `CatalogQueryService`.
 - `com.flight.booking` — owns `booking`; the orchestrator (the saga).
 - `com.flight.payment` — owns `payment`; the payment intent (gateway stubbed).
 
-`booking` drives `search`, `inventory`, and `payment` through their interfaces
-(`FlightQueryService`, `InventoryService`, `PaymentService`). The seams are explicit so
-any package could be extracted into its own service later.
+`search` and `booking` both call `inventory` through its interfaces (`CatalogQueryService`
+for flight reads/fare, `InventoryService` for seat holds); `booking` also drives `payment`
+via `PaymentService`. Because `flight` and `seat` share one owner, the availability JOIN is
+internal to `inventory` — **no package ever queries another package's table** (no
+exceptions). The seams are explicit so any package could be extracted into its own service
+later.
 
 See [design.md](design.md) for the full design (entities, state machines, indexes,
 failure scenarios).
@@ -88,8 +93,7 @@ curl -i -X POST http://localhost:8080/bookings/initiate \
   -d '{
         "userId": "U1",
         "scheduledFlightId": "SF1",
-        "seatNo": "12A",
-        "passengers": [ { "name": "Ayush" } ]
+        "seatNo": "12A"
       }'
 ```
 

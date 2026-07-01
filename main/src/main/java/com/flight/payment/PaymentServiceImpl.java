@@ -1,5 +1,7 @@
 package com.flight.payment;
 
+import com.flight.payment.dto.PaymentIntent;
+import com.flight.payment.entity.Payment;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;

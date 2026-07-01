@@ -1,4 +1,4 @@
-package com.flight.booking;
+package com.flight.booking.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;

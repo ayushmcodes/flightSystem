@@ -1,4 +1,4 @@
-package com.flight.inventory;
+package com.flight.inventory.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
