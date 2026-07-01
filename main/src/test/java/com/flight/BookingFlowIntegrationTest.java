@@ -1,116 +1,127 @@
 package com.flight;
 
 import com.flight.booking.BookingRepository;
-import com.flight.booking.BookingService;
 import com.flight.booking.dto.BookingResponse;
 import com.flight.booking.dto.InitiateBookingRequest;
 import com.flight.booking.entity.Booking;
 import com.flight.inventory.SeatRepository;
 import com.flight.inventory.entity.Seat;
 import com.flight.payment.PaymentRepository;
-import com.flight.payment.PaymentService;
 import com.flight.payment.entity.Payment;
-import com.flight.search.FlightSearchService;
+import com.flight.search.dto.FlightSearchResponse;
 import com.flight.search.dto.FlightSearchResult;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.web.client.RestTemplate;
 
-import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
-import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end integration test against a real PostgreSQL container.
- * Covers the full booking lifecycle: search → initiate → confirm (mock webhook).
+ * End-to-end integration test against the running Docker Compose stack.
  *
- * Requires Docker. The container is started once for the class and shared across all
- * tests. Schema and seed data are applied via the existing db/init/ scripts — the same
- * files the production docker-compose uses, so no test-specific SQL is needed.
+ * Prerequisites: docker compose up (app on :8080, postgres exposed on :5433).
+ * The test Spring context connects to the same postgres for DB assertions only —
+ * no embedded server is started.
+ *
+ * Re-runnable: @BeforeEach resets seat 3A to AVAILABLE before each test.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
-@Testcontainers
+@TestPropertySource(properties = {
+        "spring.datasource.url=jdbc:postgresql://localhost:5433/flightdb",
+        "spring.datasource.username=flight",
+        "spring.datasource.password=flight"
+})
 class BookingFlowIntegrationTest {
 
-    @Container
-    @SuppressWarnings("resource") // lifecycle managed by the @Testcontainers extension
-    static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16")
-            .withDatabaseName("flightdb")
-            .withUsername("flight")
-            .withPassword("flight")
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath("db/init/V1__schema.sql"),
-                    "/docker-entrypoint-initdb.d/01-schema.sql")
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath("db/init/V2__seed.sql"),
-                    "/docker-entrypoint-initdb.d/02-seed.sql");
+    private static final String BASE_URL = "http://localhost:8080";
 
-    @DynamicPropertySource
-    static void configureProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-    }
+    private final RestTemplate http = new RestTemplate();
 
-    @Autowired private FlightSearchService flightSearchService;
-    @Autowired private BookingService bookingService;
-    @Autowired private PaymentService paymentService;
     @Autowired private BookingRepository bookingRepository;
     @Autowired private SeatRepository seatRepository;
     @Autowired private PaymentRepository paymentRepository;
+    @Autowired private JdbcTemplate jdbc;
+
+    @BeforeEach
+    void resetSeat() {
+        jdbc.update("UPDATE seat SET status = 'AVAILABLE', booking_id = NULL, hold_expires_at = NULL WHERE seat_no = '3A'");
+    }
 
     @Test
     void fullBookingLifecycle_searchInitiateConfirm() {
         // --- Step 1: Search ---
-        List<FlightSearchResult> flights = flightSearchService
-                .search("BLR", "DEL", LocalDate.of(2026, 7, 15))
-                .flights();
-        assertThat(flights).isNotEmpty();
+        FlightSearchResponse searchResp = http.getForObject(
+                BASE_URL + "/flights/search?source=BLR&destination=DEL&date=2026-07-15",
+                FlightSearchResponse.class);
+        assertThat(searchResp).isNotNull();
+        assertThat(searchResp.flights()).isNotEmpty();
 
-        FlightSearchResult flight = flights.get(0); // SF1: 6E-203, BLR→DEL
+        FlightSearchResult flight = searchResp.flights().get(0);
 
-        // --- Step 2: Initiate ---
-        BookingResponse response = bookingService.initiate(
-                "idem-e2e-1",
-                new InitiateBookingRequest("U1", flight.scheduledFlightId(), "3A"));
+        // --- Step 2: Initiate booking ---
+        String idempotencyKey = "idem-e2e-" + UUID.randomUUID();
+        HttpHeaders initiateHeaders = new HttpHeaders();
+        initiateHeaders.set("Idempotency-Key", idempotencyKey);
+        initiateHeaders.setContentType(MediaType.APPLICATION_JSON);
+
+        ResponseEntity<BookingResponse> initiateResp = http.exchange(
+                BASE_URL + "/bookings/initiate",
+                HttpMethod.POST,
+                new HttpEntity<>(new InitiateBookingRequest("U1", flight.scheduledFlightId(), "3A"), initiateHeaders),
+                BookingResponse.class);
+
+        assertThat(initiateResp.getStatusCode().is2xxSuccessful()).isTrue();
+        BookingResponse bookingResp = initiateResp.getBody();
+        assertThat(bookingResp).isNotNull();
 
         // --- Step 3: Mid-flow assertions (PENDING / HELD / CREATED) ---
-        assertThat(response.status()).isEqualTo("PENDING");
-        assertThat(response.seatNo()).isEqualTo("3A");
-        assertThat(response.paymentId()).isNotNull();
-        assertThat(response.amount()).isEqualByComparingTo(flight.baseFare());
+        assertThat(bookingResp.status()).isEqualTo("PENDING");
+        assertThat(bookingResp.seatNo()).isEqualTo("3A");
+        assertThat(bookingResp.paymentId()).isNotNull();
+        assertThat(bookingResp.amount()).isEqualByComparingTo(flight.baseFare());
 
-        Booking booking = bookingRepository.findById(response.bookingId()).orElseThrow();
+        Booking booking = bookingRepository.findById(bookingResp.bookingId()).orElseThrow();
         assertThat(booking.getStatus()).isEqualTo("PENDING");
         assertThat(booking.getSeatId()).isNotNull();
-        assertThat(booking.getPaymentId()).isEqualTo(response.paymentId());
+        assertThat(booking.getPaymentId()).isEqualTo(bookingResp.paymentId());
 
         Seat seat = seatRepository
                 .findByScheduledFlightIdAndSeatNo(flight.scheduledFlightId(), "3A")
                 .orElseThrow();
         assertThat(seat.getStatus()).isEqualTo("HELD");
-        assertThat(seat.getBookingId()).isEqualTo(response.bookingId());
+        assertThat(seat.getBookingId()).isEqualTo(bookingResp.bookingId());
         assertThat(seat.getHoldExpiresAt()).isAfter(OffsetDateTime.now(ZoneOffset.UTC));
 
-        Payment payment = paymentRepository.findById(response.paymentId()).orElseThrow();
+        Payment payment = paymentRepository.findById(bookingResp.paymentId()).orElseThrow();
         assertThat(payment.getStatus()).isEqualTo("CREATED");
-        assertThat(payment.getBookingId()).isEqualTo(response.bookingId());
-        assertThat(payment.getAmount()).isEqualByComparingTo(response.amount());
+        assertThat(payment.getBookingId()).isEqualTo(bookingResp.bookingId());
+        assertThat(payment.getAmount()).isEqualByComparingTo(bookingResp.amount());
 
         // --- Step 4: Confirm payment (mock webhook) ---
-        paymentService.confirm(response.paymentId(), "evt-e2e-1");
+        HttpHeaders confirmHeaders = new HttpHeaders();
+        confirmHeaders.set("Event-Id", "evt-e2e-" + UUID.randomUUID());
+
+        http.exchange(
+                BASE_URL + "/payments/" + bookingResp.paymentId() + "/confirm",
+                HttpMethod.POST,
+                new HttpEntity<>(null, confirmHeaders),
+                Void.class);
 
         // --- Step 5: Final state assertions (CONFIRMED / BOOKED / SUCCESS) ---
-        Booking confirmedBooking = bookingRepository.findById(response.bookingId()).orElseThrow();
+        Booking confirmedBooking = bookingRepository.findById(bookingResp.bookingId()).orElseThrow();
         assertThat(confirmedBooking.getStatus()).isEqualTo("CONFIRMED");
 
         Seat bookedSeat = seatRepository
@@ -119,7 +130,7 @@ class BookingFlowIntegrationTest {
         assertThat(bookedSeat.getStatus()).isEqualTo("BOOKED");
         assertThat(bookedSeat.getHoldExpiresAt()).isNull();
 
-        Payment successPayment = paymentRepository.findById(response.paymentId()).orElseThrow();
+        Payment successPayment = paymentRepository.findById(bookingResp.paymentId()).orElseThrow();
         assertThat(successPayment.getStatus()).isEqualTo("SUCCESS");
     }
 }
