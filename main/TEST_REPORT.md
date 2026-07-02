@@ -11,14 +11,14 @@ quick reference for reviewers.
 
 24 unit tests run with pure Mockito (no Spring context, no DB); 1 integration test requires Docker and runs the full Spring context against a real `postgres:16` container.
 
-| Test class | Tests | Result |
-|---|---|---|
-| InventoryServiceImplTest | 6 | ✅ PASS |
-| BookingServiceImplTest | 10 | ✅ PASS |
-| FlightSearchServiceImplTest | 2 | ✅ PASS |
-| PaymentServiceImplTest | 6 | ✅ PASS |
-| BookingFlowIntegrationTest | 1 | 🐳 Requires Docker |
-| **Total** | **25** | **24 passed** |
+| Test class | Tests | Result        |
+|---|---|---------------|
+| InventoryServiceImplTest | 6 | ✅ PASS        |
+| BookingServiceImplTest | 10 | ✅ PASS        |
+| FlightSearchServiceImplTest | 2 | ✅ PASS        |
+| PaymentServiceImplTest | 6 | ✅ PASS        |
+| BookingFlowIntegrationTest | 1 | ✅ PASS        |
+| **Total** | **25** | **25 passed** |
 
 ---
 
