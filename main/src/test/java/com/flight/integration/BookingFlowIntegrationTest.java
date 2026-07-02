@@ -110,7 +110,7 @@ class BookingFlowIntegrationTest {
         assertThat(payment.getBookingId()).isEqualTo(bookingResp.bookingId());
         assertThat(payment.getAmount()).isEqualByComparingTo(bookingResp.amount());
 
-        // --- Step 4: Confirm payment (mock webhook) ---
+        // --- Step 4: Confirm payment (response from payment gateway to our exposed webhook) ---
         HttpHeaders confirmHeaders = new HttpHeaders();
         confirmHeaders.set("Event-Id", "evt-e2e-" + UUID.randomUUID());
 
