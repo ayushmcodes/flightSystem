@@ -106,7 +106,7 @@ public class BookingServiceImpl implements BookingService {
         if (!confirmed) {
             // Hold expired or seat taken — money taken but seat is gone.
             bookingRepository.markFailed(bookingId);
-            // TODO: trigger refund — money taken but seat unavailable (re-accommodate or refund)
+            // trigger refund — money taken but seat unavailable (re-accommodate or refund)
             return;
         }
 

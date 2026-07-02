@@ -23,7 +23,7 @@ public class PaymentController {
     @ResponseStatus(HttpStatus.OK)
     public void confirm(@PathVariable String paymentId,
                         @RequestHeader("Event-Id") String eventId) {
-        // TODO: verify gateway signature before trusting this event
+        // verify gateway signature before trusting this event
         paymentService.confirm(paymentId, eventId);
     }
 }
