@@ -1,5 +1,18 @@
 # Flight Booking System — Design Document
 
+## Contents
+
+1. [Scope & Architecture Decision](#1-scope--architecture-decision)
+2. [Assumptions & Deliberate Simplifications](#2-assumptions--deliberate-simplifications)
+3. [Entity Model](#3-entity-model)
+4. [State Machines](#4-state-machines)
+5. [Booking Flow](#5-booking-flow-end-to-end)
+6. [Idempotency](#6-idempotency)
+7. [Failure Scenarios](#7-failure-scenarios)
+8. [API Contracts](#8-api-contracts)
+
+---
+
 ## 1. Scope & Architecture Decision
 
 The system supports searching flights and initiating a booking, where initiating a
