@@ -179,8 +179,6 @@ cd main
 mvn test -Dtest=BookingFlowIntegrationTest -pl .
 ```
 
-TestContainers spins up a `postgres:16` container, loads the production schema and seed data, boots the full Spring context, and runs the complete booking lifecycle: search → initiate → confirm → assert final DB state.
-
 ### All tests
 
 ```bash
