@@ -1,66 +1,61 @@
 # Flight Booking System
 
-A flight search + booking service built as a **modular monolith**: one Spring Boot app,
-one Postgres database, four internal packages that talk only through Java service
-interfaces (in-process, never HTTP, never by reaching into another package's tables).
+A flight search and booking service built as a modular monolith. One Spring Boot app, one PostgreSQL database, four internal packages (`search`, `inventory`, `booking`, `payment`) that communicate only through Java service interfaces — never by querying each other's tables.
 
-- `com.flight.inventory` — owns `flight` + `seat` (one aggregate cluster: a flight and its
-  seats). Source of truth for the sellable catalog and the **no-oversell** guarantee.
-- `com.flight.search` — owns no tables; a read/API module that serves flight search by
-  calling inventory's `CatalogQueryService`.
-- `com.flight.booking` — owns `booking`; the orchestrator (the saga).
-- `com.flight.payment` — owns `payment`; the payment intent (gateway stubbed).
+See [design.md](design.md) for the full design: entities, state machines, booking flow, idempotency, and failure scenarios.
 
-`search` and `booking` both call `inventory` through its interfaces (`CatalogQueryService`
-for flight reads/fare, `InventoryService` for seat holds); `booking` also drives `payment`
-via `PaymentService`. Because `flight` and `seat` share one owner, the availability JOIN is
-internal to `inventory` — **no package ever queries another package's table** (no
-exceptions). The seams are explicit so any package could be extracted into its own service
-later.
+---
 
-See [design.md](design.md) for the full design (entities, state machines, indexes,
-failure scenarios).
+## Prerequisites
 
-## Run it
+- Docker and Docker Compose
+- Java 17+ and Maven (only needed to run tests outside Docker)
 
-Requires Docker. From this directory:
+---
+
+## Running the application
+
+From the `main/` directory:
 
 ```bash
 docker compose up --build
 ```
 
-This starts exactly two containers:
+This starts two containers:
+- **postgres** — Postgres 16. The schema (`db/init/V1__schema.sql`) and seed data (`db/init/V2__seed.sql`) are loaded automatically on first boot.
+- **app** — Spring Boot app, waits for Postgres to be healthy then starts on port `8080`.
 
-- `postgres` (Postgres 16) — the schema (`db/init/V1__schema.sql`) and seed
-  (`db/init/V2__seed.sql`) are mounted into `docker-entrypoint-initdb.d` and run
-  automatically on first boot.
-- `app` — waits for Postgres to become healthy (`depends_on: condition: service_healthy`,
-  backed by a `pg_isready` healthcheck), then connects on
-  `jdbc:postgresql://postgres:5432/flightdb`.
+The API is available at **http://localhost:8080**.
 
-The API is exposed on the host at **http://localhost:8080**.
+> **Reset the database:** `docker compose down -v` then `docker compose up --build` again. The `-v` flag removes the Postgres data volume so the init scripts re-run.
 
-> Re-seeding: the init scripts only run when the Postgres data volume is first created.
-> To reset the DB, `docker compose down -v` then `up` again.
+---
 
 ## Seed data
 
-5 dated flights, 20 `AVAILABLE` seats each (rows 1–2 BUSINESS, rows 3–5 ECONOMY):
+5 flights are pre-loaded, each with 20 available seats (rows 1–2 BUSINESS, rows 3–5 ECONOMY, columns A–D):
 
-| scheduled_flight_id | flight | route | departure (UTC) | base fare |
-|---|---|---|---|---|
-| SF1 | 6E-203 | BLR→DEL | 2026-07-15 08:00 | 5000 |
-| SF2 | 6E-411 | BLR→DEL | 2026-07-16 18:00 | 5500 |
-| SF3 | AI-505 | BLR→BOM | 2026-07-15 09:30 | 4200 |
-| SF4 | UK-810 | DEL→BLR | 2026-07-20 07:00 | 6000 |
-| SF5 | 6E-777 | BLR→DEL | 2026-07-20 14:00 | 4800 |
+| ID  | Flight  | Route   | Departure (UTC)     | Fare |
+|-----|---------|---------|---------------------|------|
+| SF1 | 6E-203  | BLR→DEL | 2026-07-15 08:00    | 5000 |
+| SF2 | 6E-411  | BLR→DEL | 2026-07-16 18:00    | 5500 |
+| SF3 | AI-505  | BLR→BOM | 2026-07-15 09:30    | 4200 |
+| SF4 | UK-810  | DEL→BLR | 2026-07-20 07:00    | 6000 |
+| SF5 | 6E-777  | BLR→DEL | 2026-07-20 14:00    | 4800 |
 
-## API 1 — Search flights
+Valid seat numbers: `1A`–`5D` (e.g. `3A`, `2B`, `5D`).
+
+---
+
+## APIs
+
+### 1. Search flights
 
 ```bash
 curl "http://localhost:8080/flights/search?source=BLR&destination=DEL&date=2026-07-15"
 ```
 
+Response:
 ```json
 {
   "flights": [
@@ -78,72 +73,105 @@ curl "http://localhost:8080/flights/search?source=BLR&destination=DEL&date=2026-
 }
 ```
 
-`availableSeats` counts `AVAILABLE` seats **plus** `HELD` seats whose hold has expired
-(lazy expiry). It is a snapshot, not a guarantee.
+`availableSeats` counts seats that are `AVAILABLE` plus any `HELD` seats whose hold TTL has expired.
 
-## API 2 — Initiate a booking
+---
 
-Holds a seat and creates a payment intent, returning `PENDING`. Requires an
-`Idempotency-Key` header.
+### 2. Initiate a booking
+
+Holds a seat and creates a payment intent. Returns `PENDING`. Requires an `Idempotency-Key` header — use a stable unique value per request and keep it the same across retries.
 
 ```bash
 curl -i -X POST http://localhost:8080/bookings/initiate \
-  -H 'Idempotency-Key: key-001' \
+  -H 'Idempotency-Key: my-request-001' \
   -H 'Content-Type: application/json' \
   -d '{
         "userId": "U1",
         "scheduledFlightId": "SF1",
-        "seatNo": "12A"
+        "seatNo": "3A"
       }'
 ```
 
+Response (`200`):
 ```json
 {
   "bookingId": "BK-...",
   "status": "PENDING",
-  "seatNo": "12A",
+  "seatNo": "3A",
   "paymentId": "PAY-...",
   "amount": 5000.00
 }
 ```
 
-> Note: the seed uses seat numbers `1A`–`5D` (rows 1–5, columns A–D). Use e.g. `3A`.
+| Status | Meaning |
+|--------|---------|
+| `200`  | Seat held, payment intent created, booking is `PENDING` |
+| `404`  | Flight or seat not found |
+| `409`  | Seat already held or booked by someone else |
+| `422`  | Same `Idempotency-Key` reused with a different request body |
 
-### Behaviours
+---
 
-- **Idempotency:** replaying the same `Idempotency-Key` with the **same body** returns the
-  original response (no new hold, no new payment). Same key + **different body** → `422`.
-- **No overselling:** two concurrent initiates on the same seat → exactly one `200`, the
-  other `409`. Enforced by a single atomic conditional `UPDATE` (rowcount), never by
-  application-level locking.
-- **404** — unknown `scheduledFlightId` or `seatNo`.
-- **409** — the seat was already held/booked by someone else.
+### 3. Confirm payment (gateway webhook)
 
-## How the no-oversell guarantee works
+In production this endpoint would be called by the payment gateway automatically after the customer pays. Here the gateway is stubbed, so **you need to call this manually** to complete the booking. Use the `paymentId` from the initiate response.
 
-`inventory.holdSeat` is one atomic, owner-and-state-guarded conditional UPDATE:
-
-```sql
-UPDATE seat SET status='HELD', booking_id=:bid, hold_expires_at=:exp
-WHERE scheduled_flight_id=:f AND seat_no=:s
-  AND ( status='AVAILABLE'
-        OR (status='HELD' AND hold_expires_at < now())   -- lazy expiry reclaim
-        OR booking_id=:bid );                             -- idempotent retry by owner
+**Success:**
+```bash
+curl -i -X POST http://localhost:8080/payments/{paymentId}/confirm \
+  -H 'Event-Id: evt-001'
 ```
 
-The DB serializes concurrent writers on the row: exactly one sees rowcount `1` (held), the
-rest see `0` (lost → `409`). The `booking_id=:bid` branch makes a retried hold by the same
-owner an idempotent no-op success.
+This transitions: `payment → SUCCESS`, `seat → BOOKED`, `booking → CONFIRMED` — atomically in one transaction.
 
-## Scope
+**Idempotent:** sending the same `Event-Id` again returns `200` and does nothing (webhook dedup via `processed_webhook` table).
 
-`POST /bookings/initiate` performs everything up to **seat held + payment intent created**
-(returns `PENDING`). Payment-success → commit seat → `CONFIRMED` is out of scope; the
-gateway is stubbed. `InventoryService` implements `confirmSeat`/`releaseSeat` for
-completeness. A background sweeper flips stale `HELD` seats back to `AVAILABLE` (reporting
-only; lazy expiry already covers correctness).
+---
 
-## Known gap
+## Full end-to-end flow
 
-Automated tests (concurrent-hold no-oversell, idempotent re-initiate, search→initiate
-integration) are not yet included and should be added before this is considered complete.
+```bash
+# 1. Search
+curl "http://localhost:8080/flights/search?source=BLR&destination=DEL&date=2026-07-15"
+
+# 2. Initiate — note the scheduledFlightId and pick any seat (e.g. 3A)
+curl -i -X POST http://localhost:8080/bookings/initiate \
+  -H 'Idempotency-Key: my-request-001' \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"U1","scheduledFlightId":"SF1","seatNo":"3A"}'
+
+# 3. Confirm payment — replace PAY-... with the paymentId from step 2
+curl -i -X POST http://localhost:8080/payments/PAY-.../confirm \
+  -H 'Event-Id: evt-001'
+
+# 4. Search again — seat 3A should no longer appear in availableSeats
+curl "http://localhost:8080/flights/search?source=BLR&destination=DEL&date=2026-07-15"
+```
+
+---
+
+## Running tests
+
+### Unit tests (no Docker needed)
+
+```bash
+./mvnw test -Dtest='InventoryServiceImplTest,BookingServiceImplTest,FlightSearchServiceImplTest,PaymentServiceImplTest'
+```
+
+25 tests, no Spring context, no database. Runs in a few seconds.
+
+### Integration test (requires Docker)
+
+```bash
+./mvnw test -Dtest=BookingFlowIntegrationTest
+```
+
+Starts a real `postgres:16` container via TestContainers, loads the production schema and seed data, boots the full Spring context, and runs the complete booking lifecycle: search → initiate → confirm → assert final DB state.
+
+### All tests
+
+```bash
+./mvnw test
+```
+
+Requires Docker running for the integration test. Unit tests always pass regardless.

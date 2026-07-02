@@ -29,9 +29,12 @@ flowchart LR
   C[Client] --> B[Booking]
   C --> S[Search]
   S -->|searchFlightsWithAvailability| I[Inventory]
-  B -->|hold / commit / release| I
-  B -->|create intent| P[Payment]
-  P -.PaymentConfirmedEvent.-> B
+  B -->|hold / confirm / release| I
+  B -->|create payment| P[Payment]
+  P -->|initiates payment| GW[Payment Gateway]
+  GW -->|webhook: success or failed| P
+  P -.->|PaymentConfirmedEvent| B
+  P -.->|PaymentFailedEvent| B
   I --- DBI[(flight, seat)]
   B --- DBB[(booking)]
   P --- DBP[(payment, processed_webhook)]
@@ -39,7 +42,45 @@ flowchart LR
 
 ---
 
-## 2. Entity Model
+## 2. Assumptions & Deliberate Simplifications
+1. **Payment status is communicated via a webhook** (`POST /payments/{id}/confirm`)
+   exposed to the payment gateway. The gateway calls it with a `status` field after
+   processing the payment out of band.
+   - **On `SUCCESS`:** payment → `SUCCESS`, seat → `BOOKED`, booking → `CONFIRMED`.
+   - **On `FAILED`:** payment → `FAILED`, held seat released → `AVAILABLE`, booking → `FAILED`.
+2. **Payment gateway always responds in under 1 minute.** The seat hold TTL is set to
+   10 minutes, providing a comfortable buffer above the expected gateway response time.
+   If this assumption is violated and the gateway responds after the hold expires, the
+   seat will have been released and the booking will be marked `FAILED` (see §7).
+3. **In-process events instead of Kafka.** Kafka has not been used to keep things
+   simple. Instead, have used Spring's `ApplicationEventPublisher` / `@EventListener`.
+   When the payment service receives a webhook response, it publishes a
+   `PaymentConfirmedEvent` or `PaymentFailedEvent` in-process; the booking service's
+   `@EventListener` consumes it synchronously in the same transaction.
+4. **PostgreSQL for seat locking instead of Redis.** Seat reservation is handled by a
+   single atomic conditional UPDATE in PostgreSQL rather than a Redis distributed lock.
+   A `SET seat:{flight}:{seat} {bookingId} NX EX {ttl}` layer in Redis could absorb
+   high traffic and thundering-herd contention off the DB on hot seats, but Redis
+   remains only a traffic absorber — the DB conditional UPDATE stays the source of
+   truth for `BOOKED`, since an in-memory store loses holds on restart or failover.
+5. **Background sweeper for stale holds.** A scheduled job runs every 60 seconds and
+   resets any `HELD` seat whose `hold_expires_at` has passed back to `AVAILABLE`. This
+   is housekeeping, not a correctness requirement — the `holdSeat` conditional UPDATE
+   already reclaims expired holds lazily on the next attempt, and the availability
+   COUNT query excludes expired holds from the seat count. The sweeper is needed so
+   that stale `HELD` rows do not accumulate in the table over time and so that the DB
+   reflects real availability between booking attempts, not just at the moment a new
+   request arrives.
+6. **No auth/users service.** `userId` is taken as given.
+7. **Search owns no store**; it calls Inventory for flights + availability (the
+   `flight`/`seat` JOIN lives in Inventory). A dedicated read model could be used for scaling.
+8. **Outbox and reconciliation are described** as the crash-safety mechanisms; the
+   submission implements the synchronous happy path plus the conditional-update
+   guarantees, which are the parts the brief asks to be demonstrated.
+
+---
+
+## 3. Entity Model
 
 ### Flight (Inventory) — read by Search
 | Field | Notes |
@@ -108,18 +149,16 @@ free from a PK or UNIQUE constraint and are not added separately.
 
 **Flight**
 - `scheduled_flight_id` — PK *(constraint)*.
-- `(source, destination, departure_time)` — the search query (§4 / API 1); a single
+- `(source, destination, departure_time)` — the search query (§5 / API 1); a single
   composite covers the equality-equality-range filter.
 
 **Seat**
-- `seat_id` — PK *(constraint)*; serves the hold/commit conditional update, which
+- `seat_id` — PK *(constraint)*; serves the hold/confirm conditional update, which
   targets one seat by id.
 - `(scheduled_flight_id, status)` — the availability count (JOIN + filter) and
   "list seats for a flight"; composite so the count is served without touching rows.
-- `booking_id` — commit/release of every seat held by a booking, and reconciliation
+- `booking_id` — confirm/release of every seat held by a booking, and reconciliation
   (`BOOKED` seats vs. non-`CONFIRMED` bookings).
-- `(hold_expires_at) WHERE status='HELD'` — partial index for the expiry sweeper;
-  only `HELD` rows are ever scanned for expiry, so the index stays small.
 
 **Booking**
 - `booking_id` — PK *(constraint)*.
@@ -136,7 +175,7 @@ free from a PK or UNIQUE constraint and are not added separately.
 
 ---
 
-## 3. State Machines
+## 4. State Machines
 
 **Seat:** `AVAILABLE → HELD → BOOKED`, with `HELD → AVAILABLE` on release / TTL expiry.
 
@@ -144,7 +183,7 @@ free from a PK or UNIQUE constraint and are not added separately.
 stateDiagram-v2
   [*] --> AVAILABLE
   AVAILABLE --> HELD: hold acquired (TTL)
-  HELD --> BOOKED: payment success, commit by owner
+  HELD --> BOOKED: payment success, confirm by owner
   HELD --> AVAILABLE: release / TTL expiry
   BOOKED --> [*]
 ```
@@ -159,11 +198,10 @@ preserve this.
 
 ---
 
-## 4. Booking Flow (end-to-end)
+## 5. Booking Flow (end-to-end)
 
 ### How seats are reserved
-A hold is acquired with a single atomic, **owner-and-state-guarded** conditional
-update — no row lock, no oversell, no distributed lock:
+To reserve a seat, a single conditional UPDATE is run directly against the seat row:
 
 ```sql
 UPDATE seat
@@ -175,11 +213,8 @@ WHERE seat_id=:sid
 ```
 
 - Row count `1` → won the seat. `0` → lost the race → fail cleanly (409).
-- The DB serializes concurrent contenders on the row, so **overselling is
-  impossible**; exactly one writer wins.
-- Expiry is **lazy**: an expired hold is reclaimable on the next attempt. A
-  background sweeper additionally flips stale `HELD → AVAILABLE` for clean reporting,
-  but is not required for correctness.
+- Only one concurrent request can win the UPDATE — the rest see `rowcount = 0` and get a 409.
+- Expiry has two layers. **Lazy reclaim** (correctness): the `OR (status='HELD' AND hold_expires_at < now())` branch in the conditional UPDATE reclaims an expired hold on the next booking attempt — no sweeper needed for correctness. **Background sweeper** (housekeeping): a scheduled job runs every 60 seconds and actively flips all stale `HELD` seats back to `AVAILABLE`, so the DB stays clean and availability counts stay accurate between booking attempts.
 
 ### How booking and payment are created and linked
 Booking is the orchestrator and brackets the whole flow (first and last writer).
@@ -190,6 +225,7 @@ sequenceDiagram
   participant B as Booking
   participant I as Inventory
   participant P as Payment
+  participant GW as Payment Gateway
   U->>B: POST /bookings/initiate (Idempotency-Key)
   B->>B: INSERT booking(PENDING)
   B->>I: hold(seat, owner=bookingId)
@@ -205,21 +241,35 @@ sequenceDiagram
     B->>B: booking.payment_id = paymentId (stays PENDING)
     B-->>U: 200 { bookingId, status: PENDING, paymentId }
   end
-  Note over U,P: user pays out of band
-  P-->>B: payment SUCCESS (verified, deduped)
-  B->>I: commit(seat, owner=bookingId)
-  I-->>B: BOOKED
-  B->>B: booking → CONFIRMED
+  Note over U,GW: user completes payment on gateway
+  U->>GW: pays out of band
+  alt payment success
+    GW->>P: POST /payments/{paymentId}/confirm (Event-Id, status=SUCCESS)
+    P->>P: dedup Event-Id, payment → SUCCESS
+    P-->>B: PaymentConfirmedEvent
+    B->>I: confirm(seat, owner=bookingId)
+    I-->>B: BOOKED
+    B->>B: booking → CONFIRMED
+    P-->>GW: 200
+  else payment failed
+    GW->>P: POST /payments/{paymentId}/confirm (Event-Id, status=FAILED)
+    P->>P: dedup Event-Id, payment → FAILED
+    P-->>B: PaymentFailedEvent
+    B->>I: release(seat)
+    B->>B: booking → FAILED
+    P-->>GW: 200
+  end
 ```
 
 ### What each entity moves through
-| Step | Booking | Seat | Payment |
+| Step | Seat | Booking | Payment |
 |---|---|---|---|
-| initiate | INSERT `PENDING` | — | — |
-| hold | — | `AVAILABLE → HELD` | — |
-| create intent | link `payment_id` | — | INSERT `CREATED` |
-| payment success | — | — | `CREATED → SUCCESS` |
-| commit | `→ CONFIRMED` | `HELD → BOOKED` | — |
+| Before `initiate` | `AVAILABLE`, `booking_id = null`, `hold_expires_at = null` | — | — |
+| Hold acquired | `HELD`, `booking_id = BK-1`, `hold_expires_at = now + 10 min` | INSERT `PENDING`, `seat_id` linked | — |
+| Hold fails (seat taken or not found) | unchanged `AVAILABLE` | `FAILED` | — |
+| Payment intent created | still `HELD` — unchanged | `payment_id` linked, stays `PENDING` | INSERT `CREATED` |
+| Payment `SUCCESS` webhook received | `BOOKED`, `hold_expires_at = null` | `CONFIRMED` | `SUCCESS` |
+| Payment `FAILED` webhook received | `AVAILABLE`, `booking_id = null` | `FAILED` | `FAILED` | — |
 
 > `POST /bookings/initiate` performs everything up to **seats held + payment intent
 > created**, returning `PENDING`.
@@ -238,27 +288,10 @@ POST /payments/{paymentId}/confirm   (Event-Id header)
 2. Payment **publishes** `PaymentConfirmedEvent(bookingId)` and touches nothing else —
    not the seat, not the booking. In the monolith this is a Spring `ApplicationEvent`;
    across services it becomes a Kafka topic (see §11).
-3. **Booking** listens for the event and orchestrates the finish: `commit(seat,
+3. **Booking** listens for the event and orchestrates the finish: `confirm(seat,
    owner=bookingId)` (`HELD → BOOKED`), then `booking → CONFIRMED`, in that order.
-   If the commit fails (hold expired, seat re-taken), booking is *not* confirmed and
+   If the confirm fails (hold expired, seat re-taken), booking is *not* confirmed and
    the refund path applies (§7).
-
----
-
-## 5. Concurrency & the no-oversell guarantee
-
-The single conditional `UPDATE` in §4 is the entire mechanism. Properties:
-
-- **Correctness without locks:** the DB serializes writers on the seat row;
-  the loser observes `rowcount=0`.
-- **No distributed lock / Redis required** at this scale.
-- **Scaling note (not implemented):** under flash-sale contention on hot seats, a
-  Redis `SET seat:{flight}:{seat} {bookingId} NX EX {ttl}` layer can absorb the
-  thundering herd off the DB. Critically, **Redis can be the mutex but never the
-  source of truth for `BOOKED`** — the durable DB conditional update remains the
-  commit-time authority, because an in-memory store loses holds on restart/failover.
-  Kept out of the submission deliberately: it adds a second stateful system and a
-  distributed-consistency problem to guard a property the DB already guarantees.
 
 ---
 
@@ -273,37 +306,55 @@ state*, which makes the system safe under the three retry scenarios:
   response if it completed, `409`/"in progress" if the original is still mid-flight,
   or the stored failure if it failed (a fresh attempt needs a new key). The key is
   bound to the request payload; same key + different body → 422.
-- **Booking → Inventory retried (timeout):** the hold/commit guard
-  `... OR booking_id=:booking_id` makes re-applying a no-op success for the owner and a
-  correct failure for anyone else. No dedup table needed — natural idempotency via
-  state transition.
-- **Booking → Payment retried (timeout):** payment key is **deterministic from
-  `booking_id`** (never a fresh value per attempt); `UNIQUE(booking_id)` ensures
-  at-most-one intent. The same key is passed through to the gateway. Retries
-  converge to one payment, so no double charge.
-- **Gateway webhook redelivery:** a `processed_webhook(event_id)` guard + the
-  payment status precondition make repeated success events no-ops.
+- **Seat hold retried after a network timeout:** `holdSeat` is idempotent for the
+  same owner. If the network drops after the hold is acquired but before the response
+  is received, retrying re-runs the same conditional UPDATE. The
+  `OR booking_id=:booking_id` branch matches the already-held row and the UPDATE
+  succeeds again — returning the same "won the seat" result as the first call. No
+  duplicate hold is created, no other booking is displaced, and no dedup table is
+  needed. The state transition is the dedup mechanism.
+- **Payment intent creation retried after a network timeout:** if `createIntent` is
+  called twice for the same booking (e.g. the first response was lost), the second
+  INSERT hits the `UNIQUE(booking_id)` constraint. The service catches the violation,
+  looks up the existing payment row by `booking_id`, and returns it — so the caller
+  gets the same `paymentId` both times. The idempotency key on the payment row is
+  derived deterministically from `booking_id` (never randomly generated), ensuring
+  the gateway also sees one consistent key across retries and cannot create a second charge.
+- **Gateway webhook delivered more than once:** payment gateways guarantee
+  at-least-once delivery, so the same webhook can arrive multiple times. On each
+  delivery, the service attempts to INSERT the `Event-Id` into `processed_webhook`.
+  If the row already exists the INSERT fails and the entire handler exits immediately —
+  the payment row is not touched and no event is published — making repeated
+  deliveries completely safe.
 
 ---
 
-## 7. Failure Scenarios (addressed explicitly)
+## 7. Failure Scenarios
 
-| Failure | Handling |
+### During booking initiation
+
+| Scenario | What happens |
 |---|---|
-| Lost race for the last seat | Conditional update returns 0 → booking `FAILED`, 409 to client, no hold leaked. |
-| Hold succeeds, payment-intent creation fails | Compensate: release hold, booking `FAILED`. |
-| User abandons payment | TTL expires the hold (lazy reclaim + sweeper); booking → `EXPIRED`. |
-| **Payment SUCCESS but seat commit fails** (hold expired, seat re-taken) | Money is taken but the seat is gone — no clean confirm possible. Resolve by **auto-refund** or **re-accommodate** to another available seat of the same class. TTL is set comfortably above realistic payment time to shrink this window; the refund path always exists. Surfaced via reconciliation, never silently dropped. |
-| Duplicate `initiate` (client retry) | Idempotency key returns the original booking; no new hold. |
-| Payment internal retry from Booking | Deterministic key + `UNIQUE(booking_id)`; at most one intent. |
-| Webhook redelivery | `processed_webhook` + status guard make it idempotent. |
-| Crash between *payment SUCCESS written* and *event emitted* | The dual-write problem. Closed by the **outbox pattern**: the payment status row and the outbox event are written in one transaction; a relay publishes from the outbox, so the event cannot be lost independently of the state change. Recovery re-publishes. |
-| Crash between *seat BOOKED* and *booking CONFIRMED* | Reconciliation job: a `BOOKED` seat whose booking is not `CONFIRMED` → finish the confirm. (Seat commit precedes booking confirm precisely so this direction is the only residual gap, and it is recoverable.) |
-| Inventory/Booking drift | Reconciliation comparing `BOOKED` seats against `CONFIRMED` bookings. |
+| Two clients race for the same seat | The conditional UPDATE is atomic — exactly one caller sees `rowcount=1`. The loser sees `rowcount=0`, their booking is immediately marked `FAILED`, and they receive a 409. No double-hold is possible. |
+| Requested seat does not exist on this flight | `NotFoundException` is raised before the booking INSERT. No booking row is created; the client receives a 404. |
+| Seat hold succeeds but payment-intent creation throws | The held seat is released back to `AVAILABLE` and the booking is marked `FAILED`. The seat is not leaked. |
 
-**Ordering rule:** the seat is committed (`HELD → BOOKED`) **before** the booking is
-marked `CONFIRMED`. Confirming first would risk a `CONFIRMED` booking with an
-un-booked seat.
+### During payment
+
+| Scenario | What happens |
+|---|---|
+| Customer never completes payment | The hold TTL (10 min) expires. The background sweeper (runs every 60s) detects the stale hold and resets the seat to `AVAILABLE`. If the sweeper hasn't run yet, the seat is still reclaimable on the next booking attempt via the lazy-expiry branch in the conditional UPDATE. The booking remains `PENDING` indefinitely — an EXPIRED sweep to close these out is **not yet implemented**. |
+| Gateway sends a `FAILED` webhook | Payment marked `FAILED`. `PaymentFailedEvent` is published; booking service releases the seat and marks the booking `FAILED`. |
+| Gateway sends a `SUCCESS` webhook but the hold had already expired | `confirmSeat` UPDATE returns 0 — the seat is no longer `HELD`. The booking is marked `FAILED`. The customer has been charged but has no seat. A refund must be triggered — **refund path is not yet implemented (TODO)**. |
+| `SUCCESS` webhook arrives for a booking whose `seatId` is `null` (consequence of `linkSeat` failure) | `bookingService.confirm` loads the booking, sees `PENDING`, and calls `confirmSeat(null, bookingId)`. The SQL `WHERE seat_id = :sid` with `sid = null` matches zero rows (NULL ≠ NULL in SQL), so `confirmSeat` returns false and the booking is marked `FAILED`. The payment is `SUCCESS` — customer charged, no seat, no refund triggered. **Not handled.** |
+| Gateway redelivers the same webhook (duplicate `Event-Id`) | The `processed_webhook` INSERT fails on the duplicate PK. The handler exits immediately — payment row is not touched, no event is published, no state changes. Returns 200 to the gateway. |
+
+### Crash safety
+
+| Scenario | What happens |
+|---|---|
+| Service crashes after payment `SUCCESS` is written but before the event fires | Not possible in the current implementation: the `@EventListener` runs synchronously inside the same `@Transactional` boundary as the payment UPDATE. Either the entire transaction commits (payment SUCCESS + seat BOOKED + booking CONFIRMED) or none of it does. |
+| Service crashes after seat is `BOOKED` but before booking is `CONFIRMED` | Booking stays `PENDING` with a `BOOKED` seat. A reconciliation job can detect this state (BOOKED seat + non-CONFIRMED booking) and finish the confirm. The ordering rule — seat committed before booking confirmed — means this is the only residual gap after a crash and it is always recoverable. **Reconciliation not yet implemented.** |
 
 ---
 
@@ -365,58 +416,3 @@ Drives `payment → SUCCESS`, `seat → BOOKED`, `booking → CONFIRMED` (§4). 
 redelivery via `processed_webhook(event_id)`; returns `200` even on a duplicate event
 (which is a no-op).
 
----
-
-## 9. Assumptions & Deliberate Simplifications
-
-1. **A `Flight` row is one dated flight**, not a recurring schedule + dated
-   instance. Production would split `FlightSchedule` from `FlightInstance`; collapsed
-   here as it does not affect the reservation logic being demonstrated.
-2. **Single-seat booking on the hot path** for clarity. Multi-seat extends naturally:
-   all seats are held in one transaction; partial holds are released as compensation.
-3. **Payment confirmation is implemented as a mock webhook** (`POST
-   /payments/{id}/confirm`) standing in for the gateway; signature verification is
-   stubbed. It drives payment `SUCCESS` → seat commit → booking `CONFIRMED`.
-4. **No auth/users service.** `userId` is taken as given.
-5. **Search owns no store**; it calls Inventory for flights + availability (the
-   `flight`/`seat` JOIN lives in Inventory). A dedicated read model built from events
-   (e.g. Elasticsearch) is described as the scaling step, not built.
-6. **Outbox and reconciliation are described** as the crash-safety mechanisms; the
-   submission implements the synchronous happy path plus the conditional-update
-   guarantees, which are the parts the brief asks to be demonstrated.
-
----
-
-## 10. Testing Approach (summary)
-
-- **Unit — seat concurrency:** two threads contend for one seat; assert exactly one
-  `HELD` and one failure (proves no oversell). This is the most critical logic.
-- **Unit — state transitions / guards:** invalid transitions rejected; commit by a
-  non-owner fails; idempotent re-initiate returns the same booking.
-- **Integration — end-to-end:** search → initiate on a returned result → assert final
-  booking state and seat state, per the brief.
-
----
-
-## 11. Persistence & Communication
-
-**Persistence — JPA for CRUD, native conditional updates for the seat.** Standard
-access (flight reads, booking and payment inserts/reads) uses Spring Data JPA. The
-seat hold/commit/release are **not** JPA read-modify-write (load entity → set field →
-save), because that is a check-then-set race that oversells under concurrency. They are
-single atomic conditional `UPDATE`s (`@Modifying @Query(nativeQuery=true)`) returning a
-rowcount — the rowcount is the no-oversell signal. No `@Version` or pessimistic locking:
-the conditional update already guarantees correctness lock-free. Idempotency rides on
-`UNIQUE` constraints (`booking.idempotency_key`, `payment.booking_id`,
-`processed_webhook.event_id`) — attempt the insert and catch the violation; never
-pre-`SELECT`, which would reintroduce the race.
-
-**Communication — in-process now, the seam for Kafka later.** Packages call each other
-through Java service interfaces (booking → inventory, booking → payment; search →
-inventory). The one publish/subscribe hop — payment announcing success to booking — is
-a Spring `ApplicationEvent` (`PaymentConfirmedEvent`), run **synchronously** so the
-payment update, seat commit, and booking confirm share one transaction. This is
-deliberately the exact seam that becomes a **Kafka topic** when payment and booking are
-extracted into separate services: publisher → topic, `@EventListener` → `@KafkaListener`,
-with an **outbox** (§7) making the publish atomic with the state change across the
-network boundary.
