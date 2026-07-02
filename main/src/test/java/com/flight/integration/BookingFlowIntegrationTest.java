@@ -1,4 +1,4 @@
-package com.flight;
+package com.flight.integration;
 
 import com.flight.booking.BookingRepository;
 import com.flight.booking.dto.BookingResponse;

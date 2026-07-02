@@ -11,6 +11,15 @@ See [design.md](design.md) for the full design: entities, state machines, bookin
 - Docker and Docker Compose
 - Java 17+ and Maven (only needed to run tests outside Docker)
 
+### Viewing diagrams in IntelliJ
+
+IntelliJ's built-in Markdown preview does not render Mermaid diagrams by default. Install the **Mermaid** plugin to enable them:
+
+1. **Settings** (`⌘,`) → **Plugins**
+2. Search for **Mermaid** (by Vladimir Schneider) → Install → Restart
+
+Diagrams render natively in VSCode without any additional setup.
+
 ---
 
 ## Running the application
@@ -163,7 +172,7 @@ curl "http://localhost:8080/flights/search?source=BLR&destination=DEL&date=2026-
 ### Integration test (requires Docker)
 
 ```bash
-./mvnw test -Dtest=BookingFlowIntegrationTest
+./mvnw test -Dtest=BookingFlowIntegrationTest -pl .
 ```
 
 Starts a real `postgres:16` container via TestContainers, loads the production schema and seed data, boots the full Spring context, and runs the complete booking lifecycle: search → initiate → confirm → assert final DB state.
