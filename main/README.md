@@ -10,15 +10,9 @@ See [design.md](design.md) for the full design: entities, state machines, bookin
 
 - Docker and Docker Compose
 - Java 17+ and Maven (only needed to run tests outside Docker)
-
-### Viewing diagrams in IntelliJ
-
-IntelliJ's built-in Markdown preview does not render Mermaid diagrams by default. Install the **Mermaid** plugin to enable them:
-
-1. **Settings** (`⌘,`) → **Plugins**
-2. Search for **Mermaid** (by Vladimir Schneider) → Install → Restart
-
-Diagrams render natively in VSCode without any additional setup.
+- **Mermaid plugin** (if using IntelliJ needed to view the flow and state diagrams in [design.md](design.md))
+  - **IntelliJ:** `⌘,` → Plugins → search **Mermaid** (by Vladimir Schneider) → Install → Restart
+  - **VSCode:** diagrams render natively with no additional setup
 
 ---
 
