@@ -126,12 +126,12 @@ an existing seat row.
 | `booking_id` (UNIQUE) | at-most-one intent per booking |
 | `amount` | |
 | `status` | `CREATED` / `SUCCESS` / `FAILED` |
-| `idempotency_key` | deterministic from `booking_id` |
+| `idempotency_key` | derived from `booking_id` so retries always produce the same key, preventing the gateway from creating a second charge |
 
 ### ProcessedWebhook (Payment)
 | Field | Notes |
 |---|---|
-| `event_id` (PK) | gateway-supplied event id; the dedup token for at-least-once webhook redelivery |
+| `event_id` (PK) | unique ID the gateway attaches to every webhook call; recorded on first delivery so repeated calls for the same event can be detected and ignored |
 
 ### Relationships
 ```
@@ -214,7 +214,7 @@ WHERE seat_id=:sid
 
 - Row count `1` → won the seat. `0` → lost the race → fail cleanly (409).
 - Only one concurrent request can win the UPDATE — the rest see `rowcount = 0` and get a 409.
-- Expiry has two layers. **Lazy reclaim** (correctness): the `OR (status='HELD' AND hold_expires_at < now())` branch in the conditional UPDATE reclaims an expired hold on the next booking attempt — no sweeper needed for correctness. **Background sweeper** (housekeeping): a scheduled job runs every 60 seconds and actively flips all stale `HELD` seats back to `AVAILABLE`, so the DB stays clean and availability counts stay accurate between booking attempts.
+- Expiry is handled in two ways. First, the conditional UPDATE itself includes a check for expired holds — if a seat is `HELD` but its expiry time has passed, the next booking attempt can take it. This means the system stays correct even if nothing else runs. Second, a background job runs every 60 seconds and resets all expired `HELD` seats back to `AVAILABLE` proactively. Without this, a seat that nobody tried to book after its hold expired would stay `HELD` in the database, making it look unavailable to search results even though no one owns it.
 
 ### How booking and payment are created and linked
 Booking is the orchestrator and brackets the whole flow (first and last writer).
@@ -281,10 +281,16 @@ Confirmation is the second half of the saga, triggered by a **mock gateway webho
 POST /payments/{paymentId}/confirm   (Event-Id header)
 ```
 
-1. **Payment** owns this endpoint (it mutates a payment row). It treats the call as
-   untrusted webhook input: dedup on `Event-Id` via `processed_webhook` (gateways
-   redeliver, at-least-once), a stubbed signature check, then a guarded
-   `CREATED → SUCCESS` update.
+1. **Payment** owns this endpoint because it is the one changing the payment row.
+   The call arrives from the payment gateway, and payment gateways commonly resend
+   the same event more than once to make sure it gets through. To handle this safely,
+   the service first records the `Event-Id` header in the `processed_webhook` table.
+   If a row with that ID already exists, the event was already handled — the service
+   returns 200 and does nothing else. If it is a new event, the service checks that
+   the request actually came from the gateway (this check is currently stubbed out)
+   and then moves the payment status from `CREATED` to `SUCCESS`. The status update
+   only applies if the payment is still in `CREATED` state, so a repeated call cannot
+   accidentally overwrite a payment that has already been resolved.
 2. Payment **publishes** `PaymentConfirmedEvent(bookingId)` and touches nothing else —
    not the seat, not the booking. In the monolith this is a Spring `ApplicationEvent`;
    across services it becomes a Kafka topic (see §11).
