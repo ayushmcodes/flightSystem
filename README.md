@@ -158,23 +158,34 @@ curl "http://localhost:8080/flights/search?source=BLR&destination=DEL&date=2026-
 ### Unit tests (no Docker needed)
 
 ```bash
-./mvnw test -Dtest='InventoryServiceImplTest,BookingServiceImplTest,FlightSearchServiceImplTest,PaymentServiceImplTest'
+cd main
+mvn test -Dtest='InventoryServiceImplTest,BookingServiceImplTest,FlightSearchServiceImplTest,PaymentServiceImplTest'
 ```
 
 25 tests, no Spring context, no database. Runs in a few seconds.
 
 ### Integration test (requires Docker)
 
+**Step 1 — start Docker:**
+
 ```bash
-./mvnw test -Dtest=BookingFlowIntegrationTest -pl .
+docker compose up --build
 ```
 
-Starts a real `postgres:16` container via TestContainers, loads the production schema and seed data, boots the full Spring context, and runs the complete booking lifecycle: search → initiate → confirm → assert final DB state.
+**Step 2 — run the integration test:**
+
+```bash
+cd main
+mvn test -Dtest=BookingFlowIntegrationTest -pl .
+```
+
+TestContainers spins up a `postgres:16` container, loads the production schema and seed data, boots the full Spring context, and runs the complete booking lifecycle: search → initiate → confirm → assert final DB state.
 
 ### All tests
 
 ```bash
-./mvnw test
+cd main
+mvn test
 ```
 
 Requires Docker running for the integration test. Unit tests always pass regardless.
