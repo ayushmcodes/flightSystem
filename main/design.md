@@ -71,7 +71,7 @@ flowchart LR
    `PaymentConfirmedEvent` or `PaymentFailedEvent` in-process; the booking service's
    `@EventListener` consumes it synchronously in the same transaction.
 4. **PostgreSQL for seat locking instead of Redis.** Seat reservation is handled by a
-   single atomic conditional UPDATE in PostgreSQL rather than a Redis distributed lock.
+   single atomic conditional UPDATE in PostgreSQL rather than a Redis distributed lock in the current implementation. Have used only postgres and not redis for now.
    A `SET seat:{flight}:{seat} {bookingId} NX EX {ttl}` layer in Redis could absorb
    high traffic and thundering-herd contention off the DB on hot seats, but Redis
    remains only a traffic absorber — the DB conditional UPDATE stays the source of
